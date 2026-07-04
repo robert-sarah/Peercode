@@ -284,7 +284,7 @@ class PeerCodeManager:
                                         status_mgr.update_presence(username, active)
                                         # sync previews via worker signal (worker will emit active_users_changed)
                                         try:
-                                            worker._sync_livestream_previews(status_mgr.active_users)
+                                            self.panel._sync_livestream_previews(status_mgr.active_users)
                                         except Exception:
                                             pass
                                     except Exception:
@@ -402,7 +402,11 @@ class PeerCodeManager:
                 qt.Qt.DockWidgetArea.LeftDockWidgetArea | 
                 qt.Qt.DockWidgetArea.RightDockWidgetArea
             )
+            # Set a reasonable maximum width so it doesn't take too much space
+            self.dock_widget.setMaximumWidth(400)
             main_window.addDockWidget(qt.Qt.DockWidgetArea.RightDockWidgetArea, self.dock_widget)
+            # Hide the dock widget initially; user can show it from the menu
+            self.dock_widget.hide()
             
             self._connect_to_all_editors()
             data.signal_dispatcher.editor_initialized.connect(self._on_new_editor)
@@ -541,9 +545,9 @@ class PeerCodeManager:
             state = self._get_ot_state(op.remote_path)
             transformed = state.apply_operation(op)
             if transformed.op_type == "insert_text":
-                self.manager.apply_remote_insert(transformed.remote_path, transformed.position, transformed.text)
+                self.apply_remote_insert(transformed.remote_path, transformed.position, transformed.text)
             elif transformed.op_type == "delete_text":
-                self.manager.apply_remote_delete(transformed.remote_path, transformed.position, transformed.length)
+                self.apply_remote_delete(transformed.remote_path, transformed.position, transformed.length)
         except Exception as e:
             print(f"Error applying OT operation: {e}")
     

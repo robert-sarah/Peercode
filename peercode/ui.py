@@ -582,6 +582,8 @@ class PeerCodePanel(qt.QWidget):
             self._handle_cursor_position(packet.sender, packet.data)
         elif packet.packet_type == PeerCodePacket.TYPE_EDIT_HISTORY:
             self._handle_edit_history(packet.data)
+        elif packet.packet_type == PeerCodePacket.TYPE_OT_OPERATION:
+            self.manager._apply_ot_operation(packet.data)
             
     def _apply_full_text(self, text: str):
         editor = self._get_current_editor()
@@ -844,9 +846,30 @@ class PeerCodePanel(qt.QWidget):
     
     def _handle_stream_frame(self, data: dict):
         import base64
-        import zlib
         try:
+            # First check if it's the new JPEG format (from video_worker.py)
+            encoded_frame = data.get("payload", "")
+            if encoded_frame:
+                import numpy as np
+                import cv2
+                width = data.get("width", 640)
+                height = data.get("height", 480)
+                frame_data = base64.b64decode(encoded_frame)
+                nparr = np.frombuffer(frame_data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    image = qt.QImage(frame_rgb.data, frame_rgb.shape[1], frame_rgb.shape[0], frame_rgb.shape[1] * 3, qt.QImage.Format.Format_RGB888)
+                    pixmap = qt.QPixmap.fromImage(image)
+                    scaled = pixmap.scaled(self.video_label.size(), qt.Qt.AspectRatioMode.KeepAspectRatio)
+                    self.video_label.setPixmap(scaled)
+                return
+            
+            # Otherwise try the old RGBA format (from stream_bridge.py)
+            import zlib
             encoded_frame = data.get("frame_data", "")
+            if not encoded_frame:
+                return
             width = data.get("width", 640)
             height = data.get("height", 480)
             compressed = bool(data.get("compressed", False))

@@ -2889,6 +2889,25 @@ class MainWindow(qt.QMainWindow):
             # Add the items
             settings_menu.addAction(show_gui_action)
 
+        # PeerCode menu
+        def construct_peer_code_menu():
+            peer_code_menu = Menu("&PeerCode", self.menubar)
+            self.menubar.addMenu(peer_code_menu)
+            peer_code_menu.installEventFilter(click_filter)
+            
+            def show_peer_code_panel():
+                if hasattr(self, "peer_code_manager"):
+                    self.peer_code_manager.show_panel()
+            
+            show_panel_action = create_action(
+                "Show PeerCode Panel",
+                None,
+                "Show the PeerCode collaborative coding panel",
+                None,
+                show_peer_code_panel,
+            )
+            peer_code_menu.addAction(show_panel_action)
+
         # Help menu
         def construct_help_menu():
             help_menu = Menu("&Help", self.menubar)
@@ -3213,6 +3232,7 @@ class MainWindow(qt.QMainWindow):
         construct_tools_menu()
         construct_sessions_menu()
         # construct_settings_menu()
+        construct_peer_code_menu()
         construct_help_menu()
 
         # Connect the triggered signal for hiding the function wheel on menubar clicks

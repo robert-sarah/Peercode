@@ -25,6 +25,10 @@ import components.communicator
 import components.thesquid
 import gui.mainwindow
 
+# Add PeerCode to path and import
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import peercode.integration
+
 
 def parse_arguments():
     """
@@ -173,6 +177,13 @@ def main():
     )
     components.thesquid.TheSquid.init_objects(main_window)
     main_window.import_user_functions()
+    
+    # Initialize PeerCode
+    peer_code_manager = peercode.integration.PeerCodeManager.get_instance()
+    peer_code_manager.initialize(main_window)
+    # Store PeerCode manager in main window for easy access
+    main_window.peer_code_manager = peer_code_manager
+    
     main_window.show()
     result = app.exec()
     functions.output_backup()
