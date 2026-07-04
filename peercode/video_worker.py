@@ -54,6 +54,9 @@ class VideoStreamWorker(qt.QObject):
         self._send_queue = queue.Queue(maxsize=128)
         self._play_queue = queue.Queue(maxsize=256)
         self._send_thread = None
+        # Remote processing (decode incoming frames/audio off the main thread)
+        self._remote_queue = queue.Queue(maxsize=512)
+        self._remote_thread = None
         self._input_stream = None
         self._output_stream = None
         
@@ -76,6 +79,13 @@ class VideoStreamWorker(qt.QObject):
         # Start audio send thread
         self._send_thread = threading.Thread(target=self._send_loop, daemon=True)
         self._send_thread.start()
+
+        # Start remote processing thread
+        try:
+            self._remote_thread = threading.Thread(target=self._remote_loop, daemon=True)
+            self._remote_thread.start()
+        except Exception:
+            self._remote_thread = None
 
         try:
             # Setup audio streams
@@ -158,6 +168,13 @@ class VideoStreamWorker(qt.QObject):
         if self._send_thread and self._send_thread.is_alive():
             self._send_thread.join(timeout=2.0)
         self._send_thread = None
+
+        if self._remote_thread and self._remote_thread.is_alive():
+            try:
+                self._remote_thread.join(timeout=2.0)
+            except Exception:
+                pass
+        self._remote_thread = None
 
         # Drain queues
         while not self._video_queue.empty():
@@ -246,6 +263,44 @@ class VideoStreamWorker(qt.QObject):
                 print(f"[VIDEO DEBUG] Video loop error: {e}")
                 if self._running:
                     time.sleep(0.1)
+
+    def enqueue_remote_packet(self, packet: PeerCodePacket):
+        """Enqueue an incoming packet for background processing."""
+        try:
+            self._remote_queue.put_nowait(packet)
+        except Exception:
+            # drop if queue full
+            pass
+
+    def _remote_loop(self):
+        """Background loop to process incoming remote packets (video/audio)."""
+        while self._running or not self._remote_queue.empty():
+            try:
+                try:
+                    packet = self._remote_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if packet.packet_type == PeerCodePacket.TYPE_STREAM_FRAME:
+                    try:
+                        self.handle_remote_video(packet)
+                    except Exception:
+                        pass
+                elif packet.packet_type == PeerCodePacket.TYPE_AUDIO_CHUNK:
+                    try:
+                        self.handle_remote_audio(packet)
+                    except Exception:
+                        pass
+                elif packet.packet_type == PeerCodePacket.TYPE_AUDIO_PRESENCE:
+                    try:
+                        data = packet.data or {}
+                        username = data.get('username')
+                        active = data.get('active', False)
+                        # emit presence via status_changed for now
+                        # users list managed elsewhere
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[VIDEO DEBUG] Remote loop error: {e}")
 
     def _broadcast_video_chunk(self, frame_data: bytes):
         """Broadcast video frame to all peers"""

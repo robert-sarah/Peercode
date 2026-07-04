@@ -261,12 +261,19 @@ class PeerCodeManager:
                             try:
                                 if packet.packet_type == PeerCodePacket.TYPE_STREAM_FRAME:
                                     try:
-                                        worker.handle_remote_video(packet)
+                                        # enqueue heavy decoding to worker background thread
+                                        if hasattr(worker, 'enqueue_remote_packet'):
+                                            worker.enqueue_remote_packet(packet)
+                                        else:
+                                            worker.handle_remote_video(packet)
                                     except Exception:
                                         pass
                                 elif packet.packet_type == PeerCodePacket.TYPE_AUDIO_CHUNK:
                                     try:
-                                        worker.handle_remote_audio(packet)
+                                        if hasattr(worker, 'enqueue_remote_packet'):
+                                            worker.enqueue_remote_packet(packet)
+                                        else:
+                                            worker.handle_remote_audio(packet)
                                     except Exception:
                                         pass
                                 elif packet.packet_type == PeerCodePacket.TYPE_AUDIO_PRESENCE:
@@ -275,7 +282,11 @@ class PeerCodeManager:
                                     active = data.get("active", False)
                                     try:
                                         status_mgr.update_presence(username, active)
-                                        worker._sync_livestream_previews(status_mgr.active_users)
+                                        # sync previews via worker signal (worker will emit active_users_changed)
+                                        try:
+                                            worker._sync_livestream_previews(status_mgr.active_users)
+                                        except Exception:
+                                            pass
                                     except Exception:
                                         pass
                             except Exception:
