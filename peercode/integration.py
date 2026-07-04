@@ -170,7 +170,15 @@ class PeerCodeManager:
                             self.panel.video_label.setText("Livestream idle\nClick 'Create Livestream' to start or 'Join Livestream' to connect")
                             return
                         if worker._running:
-                            worker.stop()
+                            # Stop worker in background to avoid blocking UI
+                            try:
+                                import threading as _threading
+                                _threading.Thread(target=worker.stop, daemon=True).start()
+                            except Exception:
+                                try:
+                                    worker.stop()
+                                except Exception:
+                                    pass
                         if status_mgr is not None:
                             try:
                                 status_mgr.update_presence(self.panel._current_username(), False)
@@ -243,6 +251,11 @@ class PeerCodeManager:
                         self.panel.voice_status = status_mgr
                         worker.active_users_changed.connect(_update_active_users_list)
                         worker.frame_ready.connect(self.panel._on_video_frame_ready)
+                        # Ensure preview clearing runs on the main thread
+                        try:
+                            worker.request_clear_previews.connect(self.panel._clear_livestream_previews)
+                        except Exception:
+                            pass
                         
                         def _on_packet(packet):
                             try:

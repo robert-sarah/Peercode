@@ -28,6 +28,7 @@ class VideoStreamWorker(qt.QObject):
     error_occurred = qt.pyqtSignal(str)
     active_users_changed = qt.pyqtSignal(list)
     status_changed = qt.pyqtSignal(str)
+    request_clear_previews = qt.pyqtSignal()
     frame_ready = qt.pyqtSignal(bytes, int, int, str)  # frame_data, width, height, sender
 
     SOURCE_SCREEN = 0
@@ -178,8 +179,8 @@ class VideoStreamWorker(qt.QObject):
         print("[VIDEO DEBUG] Video worker stopped successfully")
         self.status_changed.emit("Livestream stopped")
         try:
-            if hasattr(self.panel, '_clear_livestream_previews'):
-                self.panel._clear_livestream_previews()
+            # Notify UI to clear previews on the main thread
+            self.request_clear_previews.emit()
         except Exception as e:
             print(f"[VIDEO DEBUG] Error clearing previews: {e}")
 

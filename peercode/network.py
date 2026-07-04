@@ -258,11 +258,38 @@ class PeerCodeHost(qt.QObject):
     def _broadcast(self, packet):
         """Send packet to all connected clients"""
         print(f"[DEBUG] Host: Broadcasting packet: type={packet.packet_type} to {len(self.clients)} clients")
+        dead = []
         for username, client_socket in list(self.clients.items()):
             try:
-                client_socket.sendall(packet.to_bytes())
+                # Use a short timeout for send to avoid blocking indefinitely
+                prev_timeout = client_socket.gettimeout()
+                try:
+                    client_socket.settimeout(1.0)
+                except Exception:
+                    prev_timeout = None
+                try:
+                    client_socket.sendall(packet.to_bytes())
+                finally:
+                    try:
+                        client_socket.settimeout(prev_timeout)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"Error sending to {username}: {e}")
+                dead.append(username)
+
+        # Clean up dead clients outside the loop
+        for username in dead:
+            try:
+                sock = self.clients.pop(username, None)
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                self.peer_disconnected.emit(username)
+            except Exception:
+                pass
                 
     def send_packet(self, packet, target=None):
         """Send packet to specific target or all clients"""
@@ -274,9 +301,33 @@ class PeerCodeHost(qt.QObject):
                     if packet.seq is None:
                         packet.seq = self._seq_counter
                         self._seq_counter += 1
-                    self.clients[target].sendall(packet.to_bytes())
+                    client_socket = self.clients.get(target)
+                    if client_socket:
+                        prev_timeout = client_socket.gettimeout()
+                        try:
+                            client_socket.settimeout(1.0)
+                        except Exception:
+                            prev_timeout = None
+                        try:
+                            client_socket.sendall(packet.to_bytes())
+                        finally:
+                            try:
+                                client_socket.settimeout(prev_timeout)
+                            except Exception:
+                                pass
                 except Exception as e:
                     print(f"Error sending to {target}: {e}")
+                    try:
+                        # remove dead client
+                        cs = self.clients.pop(target, None)
+                        if cs:
+                            try:
+                                cs.close()
+                            except Exception:
+                                pass
+                        self.peer_disconnected.emit(target)
+                    except Exception:
+                        pass
         else:
             if packet.seq is None:
                 packet.seq = self._seq_counter
