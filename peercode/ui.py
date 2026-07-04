@@ -21,6 +21,7 @@ import qt
 
 from .network import PeerCodeHost, PeerCodeClient, PeerCodePacket
 from .stream_bridge import StreamBridge, CaptureThread
+from .state import load_state, save_state
 
 
 class PeerCodePanel(qt.QWidget):
@@ -52,8 +53,44 @@ class PeerCodePanel(qt.QWidget):
         self.shared_todos = []
         self.shared_snippets = []
         self.presenter_username = ""
+        self.edit_history = {}
+
+        # Load persistent state
+        try:
+            _state = load_state()
+            self.shared_todos = _state.get("shared_todos", [])
+            self.shared_snippets = _state.get("shared_snippets", [])
+            self.shared_notes_edit_content = _state.get("shared_notes", "")
+            self.presenter_username = _state.get("presenter", "")
+            self.edit_history = _state.get("edit_history", {})
+        except Exception:
+            self.shared_notes_edit_content = ""
         
         self._init_ui()
+        # apply loaded state into UI
+        try:
+            for item in self.shared_todos:
+                prefix = "[x]" if item.get("done") else "[ ]"
+                self.todo_list.addItem(f'{prefix} {item.get("text","")} ({item.get("author","")})')
+            for s in self.shared_snippets:
+                self.snippets_list.addItem(f'{s.get("name","Snippet")} ({s.get("author","")})')
+            self.shared_notes_edit.setPlainText(getattr(self, 'shared_notes_edit_content', ""))
+            self.presenter_label.setText(f"Presenter: {self.presenter_username or 'None'}")
+        except Exception:
+            pass
+
+    def _save_persistent_state(self):
+        try:
+            state = {
+                "shared_todos": self.shared_todos,
+                "shared_snippets": self.shared_snippets,
+                "shared_notes": self.shared_notes_edit.toPlainText() if hasattr(self, 'shared_notes_edit') else "",
+                "presenter": self.presenter_username,
+                "edit_history": self.edit_history,
+            }
+            save_state(state)
+        except Exception:
+            pass
         
     def _init_ui(self):
         layout = qt.QVBoxLayout(self)
@@ -559,6 +596,12 @@ class PeerCodePanel(qt.QWidget):
         text = data.get("text", "")
         print(f"[DEBUG] Applying insert: remote_path={remote_path}, pos={position}, text={repr(text)}")
         self.manager.apply_remote_insert(remote_path, position, text)
+        # record edit history (append simple op)
+        key = remote_path or 'unsaved'
+        self.edit_history.setdefault(key, []).append({
+            'op': 'insert', 'pos': position, 'text': text, 'sender': getattr(self, 'username_edit').text() if hasattr(self, 'username_edit') else 'User'
+        })
+        self._save_persistent_state()
     
     def _apply_delete_text(self, data: dict):
         remote_path = data.get("file_path", "")
@@ -566,6 +609,10 @@ class PeerCodePanel(qt.QWidget):
         length = data.get("length", 0)
         print(f"[DEBUG] Applying delete: remote_path={remote_path}, pos={position}, length={length}")
         self.manager.apply_remote_delete(remote_path, position, length)
+        self.edit_history.setdefault(remote_path or 'unsaved', []).append({
+            'op': 'delete', 'pos': position, 'length': length, 'sender': getattr(self, 'username_edit').text() if hasattr(self, 'username_edit') else 'User'
+        })
+        self._save_persistent_state()
             
     def _on_chat_received(self, username: str, message: str):
         self._append_chat(username, message)
@@ -712,16 +759,23 @@ class PeerCodePanel(qt.QWidget):
     def _on_frame_ready(self, frame_data, width, height):
         try:
             import base64
+            import zlib
             image = qt.QImage(frame_data, width, height, qt.QImage.Format.Format_RGBA8888)
             pixmap = qt.QPixmap.fromImage(image)
             scaled = pixmap.scaled(self.video_label.size(), qt.Qt.AspectRatioMode.KeepAspectRatio)
             self.video_label.setPixmap(scaled)
             
             if self.host or self.client:
-                encoded_frame = base64.b64encode(frame_data).decode('utf-8')
+                compressed_frame = zlib.compress(frame_data)
+                encoded_frame = base64.b64encode(compressed_frame).decode('utf-8')
                 packet = PeerCodePacket(
                     PeerCodePacket.TYPE_STREAM_FRAME,
-                    {"frame_data": encoded_frame, "width": width, "height": height}
+                    {
+                        "frame_data": encoded_frame,
+                        "width": width,
+                        "height": height,
+                        "compressed": True,
+                    }
                 )
                 if self.host:
                     self.host.send_packet(packet)
@@ -790,11 +844,15 @@ class PeerCodePanel(qt.QWidget):
     
     def _handle_stream_frame(self, data: dict):
         import base64
+        import zlib
         try:
             encoded_frame = data.get("frame_data", "")
             width = data.get("width", 640)
             height = data.get("height", 480)
+            compressed = bool(data.get("compressed", False))
             frame_data = base64.b64decode(encoded_frame)
+            if compressed:
+                frame_data = zlib.decompress(frame_data)
             image = qt.QImage(frame_data, width, height, qt.QImage.Format.Format_RGBA8888)
             pixmap = qt.QPixmap.fromImage(image)
             scaled = pixmap.scaled(self.video_label.size(), qt.Qt.AspectRatioMode.KeepAspectRatio)
@@ -900,6 +958,7 @@ class PeerCodePanel(qt.QWidget):
         self.shared_todos.append(item)
         prefix = "[x]" if item["done"] else "[ ]"
         self.todo_list.addItem(f'{prefix} {item["text"]} ({item["author"]})')
+        self._save_persistent_state()
         
     def _handle_todo_toggle(self, data):
         index = data.get("index", -1)
@@ -908,12 +967,14 @@ class PeerCodePanel(qt.QWidget):
             item = self.shared_todos[index]
             prefix = "[x]" if item["done"] else "[ ]"
             self.todo_list.item(index).setText(f'{prefix} {item["text"]} ({item["author"]})')
+            self._save_persistent_state()
             
     def _handle_todo_remove(self, data):
         index = data.get("index", -1)
         if 0 <= index < len(self.shared_todos):
             self.shared_todos.pop(index)
             self.todo_list.takeItem(index)
+            self._save_persistent_state()
             
     def _handle_notification(self, data):
         self._push_notification(data.get("title", "Info"), data.get("message", ""), broadcast=False)
@@ -924,6 +985,7 @@ class PeerCodePanel(qt.QWidget):
         self.presenter_label.setText(f"Presenter: {username or 'None'}")
         if username:
             self._push_notification("Presenter", f"{username} is now presenting", broadcast=False)
+        self._save_persistent_state()
             
     def _handle_snippet_add(self, data):
         snippet = {
@@ -933,12 +995,14 @@ class PeerCodePanel(qt.QWidget):
         }
         self.shared_snippets.append(snippet)
         self.snippets_list.addItem(f'{snippet["name"]} ({snippet["author"]})')
+        self._save_persistent_state()
         
     def _handle_snippet_remove(self, data):
         index = data.get("index", -1)
         if 0 <= index < len(self.shared_snippets):
             self.shared_snippets.pop(index)
             self.snippets_list.takeItem(index)
+            self._save_persistent_state()
             
     def _handle_find_replace(self, data):
         find_text = data.get("find_text", "")
@@ -952,6 +1016,13 @@ class PeerCodePanel(qt.QWidget):
             new_text = current_text.replace(find_text, replace_text)
             editor.set_all_text(new_text)
             self._ignore_text_changes = False
+            key = getattr(editor, "file_path", None) or "unsaved"
+            self.edit_history.setdefault(key, []).append({
+                "op": "find/replace",
+                "find": find_text,
+                "replace": replace_text,
+            })
+            self._save_persistent_state()
             
     def _handle_cursor_position(self, sender, data):
         print(f"[DEBUG] Received cursor position from {sender}: {data}")

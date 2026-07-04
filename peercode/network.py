@@ -57,6 +57,7 @@ class PeerCodePacket:
         self.packet_type = packet_type
         self.data = data
         self.sender = sender
+        self.seq = None
     
     def to_bytes(self):
         """Serialize packet to bytes"""
@@ -65,6 +66,8 @@ class PeerCodePacket:
             "data": self.data,
             "sender": self.sender
         }
+        if self.seq is not None:
+            packet_dict["seq"] = int(self.seq)
         json_str = json.dumps(packet_dict, ensure_ascii=False)
         length_bytes = len(json_str).to_bytes(4, byteorder='big')
         return length_bytes + json_str.encode('utf-8')
@@ -74,14 +77,35 @@ class PeerCodePacket:
         """Deserialize bytes to packet"""
         try:
             packet_dict = json.loads(data.decode('utf-8'))
-            return cls(
+            obj = cls(
                 packet_type=packet_dict["type"],
                 data=packet_dict["data"],
                 sender=packet_dict.get("sender", "unknown")
             )
+            if "seq" in packet_dict:
+                try:
+                    obj.seq = int(packet_dict["seq"])
+                except Exception:
+                    obj.seq = None
+            return obj
         except Exception as e:
             print(f"Error deserializing packet: {e}")
             return None
+
+
+def recv_exact(sock, n):
+    """Receive exactly n bytes from socket or return None if EOF."""
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except Exception as e:
+            # Error on recv
+            return None
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 class PeerCodeHost(qt.QObject):
@@ -103,6 +127,7 @@ class PeerCodeHost(qt.QObject):
         self.clients = {}
         self.running = False
         self.accept_thread = None
+        self._seq_counter = 1
         
     def start(self):
         """Start the server"""
@@ -144,11 +169,13 @@ class PeerCodeHost(qt.QObject):
         username = "unknown"
         try:
             print("[DEBUG] Host: Waiting for init packet from client...")
-            header = client_socket.recv(4)
-            if len(header) != 4:
+            header = recv_exact(client_socket, 4)
+            if not header or len(header) != 4:
                 return
             length = int.from_bytes(header, byteorder='big')
-            data = client_socket.recv(length)
+            data = recv_exact(client_socket, length)
+            if not data:
+                return
             packet = PeerCodePacket.from_bytes(data)
             
             if packet and packet.packet_type == PeerCodePacket.TYPE_INIT:
@@ -162,20 +189,19 @@ class PeerCodeHost(qt.QObject):
                 client_socket.sendall(PeerCodePacket(PeerCodePacket.TYPE_PEER_JOIN, peers, self.username).to_bytes())
                 
             while self.running:
-                header = client_socket.recv(4)
-                if len(header) != 4:
+                header = recv_exact(client_socket, 4)
+                if not header or len(header) != 4:
                     break
                 length = int.from_bytes(header, byteorder='big')
-                data = client_socket.recv(length)
-                if len(data) != length:
+                data = recv_exact(client_socket, length)
+                if not data:
                     break
-                    
                 packet = PeerCodePacket.from_bytes(data)
                 if packet:
                     packet.sender = username
                     print(f"[DEBUG] Host: Received from {username}: type={packet.packet_type}")
                     self.packet_received.emit(packet)
-                    
+
                     if packet.packet_type == PeerCodePacket.TYPE_CHAT:
                         self.chat_received.emit(username, packet.data)
                         self._broadcast(packet)
@@ -201,6 +227,9 @@ class PeerCodeHost(qt.QObject):
                         PeerCodePacket.TYPE_ACCESS_CHANGE
                     ]:
                         print(f"[DEBUG] Host: Broadcasting {packet.packet_type} from {username}")
+                        # assign sequence number for ordering
+                        packet.seq = self._seq_counter
+                        self._seq_counter += 1
                         self._broadcast(packet)
                         
         except Exception as e:
@@ -233,10 +262,17 @@ class PeerCodeHost(qt.QObject):
         if target:
             if target in self.clients:
                 try:
+                    # assign sequence if broadcasting from host
+                    if packet.seq is None:
+                        packet.seq = self._seq_counter
+                        self._seq_counter += 1
                     self.clients[target].sendall(packet.to_bytes())
                 except Exception as e:
                     print(f"Error sending to {target}: {e}")
         else:
+            if packet.seq is None:
+                packet.seq = self._seq_counter
+                self._seq_counter += 1
             self._broadcast(packet)
             
     def send_chat(self, message):
@@ -313,19 +349,19 @@ class PeerCodeClient(qt.QObject):
         print("[DEBUG] Client: Starting receive loop...")
         while self.running:
             try:
-                header = self.socket.recv(4)
-                if len(header) != 4:
+                header = recv_exact(self.socket, 4)
+                if not header or len(header) != 4:
                     break
                 length = int.from_bytes(header, byteorder='big')
-                data = self.socket.recv(length)
-                if len(data) != length:
+                data = recv_exact(self.socket, length)
+                if not data or len(data) != length:
                     break
-                    
+
                 packet = PeerCodePacket.from_bytes(data)
                 if packet:
                     print(f"[DEBUG] Client: Received packet: type={packet.packet_type}, sender={packet.sender}")
                     self.packet_received.emit(packet)
-                    
+
                     if packet.packet_type == PeerCodePacket.TYPE_CHAT:
                         self.chat_received.emit(packet.sender, packet.data)
                     elif packet.packet_type in [
@@ -334,14 +370,14 @@ class PeerCodeClient(qt.QObject):
                         PeerCodePacket.TYPE_RENAME_FILE
                     ]:
                         self.file_operation_received.emit(packet.packet_type, packet.data)
-                        
+
             except Exception as e:
                 if self.running:
                     print(f"Receive error: {e}")
                     import traceback
                     traceback.print_exc()
                 break
-                
+
         self.disconnect()
         
     def send_packet(self, packet):
