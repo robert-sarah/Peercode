@@ -19,6 +19,7 @@ import qt
 import data
 import functions
 
+from .ot import OTDocumentState, TextOperation
 from .ui import PeerCodePanel
 
 
@@ -41,6 +42,7 @@ class PeerCodeManager:
         self._last_text_states = {}
         self._remote_to_local_path = {}  # Maps remote filename to local absolute path
         self._local_to_remote_path = {}  # Maps local absolute path to remote filename
+        self._ot_states = {}
     
     def get_project_state(self):
         """Get the current project state as a dictionary"""
@@ -406,6 +408,21 @@ class PeerCodeManager:
             editors = self.main_window.get_all_editors()
             for editor in editors:
                 self._connect_to_editor(editor)
+
+    def _get_ot_state(self, remote_path: str):
+        if remote_path not in self._ot_states:
+            self._ot_states[remote_path] = OTDocumentState()
+        return self._ot_states[remote_path]
+
+    def _send_ot_operation(self, op: TextOperation):
+        from .network import PeerCodePacket
+        packet = PeerCodePacket(PeerCodePacket.TYPE_OT_OPERATION, op.to_dict(), self.panel._current_username())
+        if self.panel.host:
+            self._get_ot_state(op.remote_path).apply_operation(op)
+            self.panel.host.send_packet(packet)
+        elif self.panel.client:
+            self._get_ot_state(op.remote_path).apply_operation(op)
+            self.panel.client.send_packet(packet)
     
     def _connect_to_editor(self, editor):
         """Connect PeerCode to a single CustomEditor"""
@@ -443,35 +460,68 @@ class PeerCodeManager:
             
             if mod_type & 0x1:  # SC_MOD_INSERTTEXT
                 if text:
-                    self._send_insert_text(remote_path, position, text)
+                    op = TextOperation(
+                        op_type="insert_text",
+                        remote_path=remote_path,
+                        position=position,
+                        text=text,
+                        length=0,
+                        client_id=self.panel._current_username(),
+                        base_version=self._get_ot_state(remote_path).get_version(),
+                    )
+                    self._send_ot_operation(op)
             elif mod_type & 0x2:  # SC_MOD_DELETETEXT
-                self._send_delete_text(remote_path, position, length)
+                self._send_ot_operation(TextOperation(
+                    op_type="delete_text",
+                    remote_path=remote_path,
+                    position=position,
+                    text="",
+                    length=length,
+                    client_id=self.panel._current_username(),
+                    base_version=self._get_ot_state(remote_path).get_version(),
+                ))
             
             self._last_text_states[local_path] = editor.text()
         except Exception as e:
             print(f"Error in SCN_MODIFIED handler: {e}")
     
     def _send_insert_text(self, remote_path, position, text):
-        if self.panel.host:
-            from .network import PeerCodePacket
-            packet = PeerCodePacket(
-                PeerCodePacket.TYPE_INSERT_TEXT,
-                {"file_path": remote_path, "position": position, "text": text}
-            )
-            self.panel.host.send_packet(packet)
-        elif self.panel.client:
-            self.panel.client.send_insert_text(position, text, remote_path)
-    
+        op = TextOperation(
+            op_type="insert_text",
+            remote_path=remote_path,
+            position=position,
+            text=text,
+            length=0,
+            client_id=self.panel._current_username(),
+            base_version=self._get_ot_state(remote_path).get_version(),
+        )
+        self._send_ot_operation(op)
+
     def _send_delete_text(self, remote_path, position, length):
-        if self.panel.host:
-            from .network import PeerCodePacket
-            packet = PeerCodePacket(
-                PeerCodePacket.TYPE_DELETE_TEXT,
-                {"file_path": remote_path, "position": position, "length": length}
-            )
-            self.panel.host.send_packet(packet)
-        elif self.panel.client:
-            self.panel.client.send_delete_text(position, length, remote_path)
+        op = TextOperation(
+            op_type="delete_text",
+            remote_path=remote_path,
+            position=position,
+            text="",
+            length=length,
+            client_id=self.panel._current_username(),
+            base_version=self._get_ot_state(remote_path).get_version(),
+        )
+        self._send_ot_operation(op)
+
+    def _apply_ot_operation(self, data: dict):
+        try:
+            op = TextOperation.from_dict(data)
+            if op.client_id == self.panel._current_username():
+                return
+            state = self._get_ot_state(op.remote_path)
+            transformed = state.apply_operation(op)
+            if transformed.op_type == "insert_text":
+                self.manager.apply_remote_insert(transformed.remote_path, transformed.position, transformed.text)
+            elif transformed.op_type == "delete_text":
+                self.manager.apply_remote_delete(transformed.remote_path, transformed.position, transformed.length)
+        except Exception as e:
+            print(f"Error applying OT operation: {e}")
     
     def _on_editor_text_changed(self, editor):
         if getattr(self.panel, '_ignore_text_changes', False):

@@ -52,6 +52,7 @@ class PeerCodePacket:
     TYPE_FIND_REPLACE = "find_replace"
     TYPE_EDIT_HISTORY = "edit_history"
     TYPE_ACCESS_CHANGE = "access_change"
+    TYPE_OT_OPERATION = "ot_operation"
     
     def __init__(self, packet_type, data, sender="unknown"):
         self.packet_type = packet_type
@@ -208,9 +209,16 @@ class PeerCodeHost(qt.QObject):
                     elif packet.packet_type == PeerCodePacket.TYPE_CREATE_FILE:
                         self.file_operation_received.emit(packet.packet_type, packet.data)
                         self._broadcast(packet)
+                    elif packet.packet_type == PeerCodePacket.TYPE_OT_OPERATION:
+                        # OT operations are rebroadcast for all peers.
+                        print(f"[DEBUG] Host: Rebroadcasting OT operation from {username}")
+                        packet.seq = self._seq_counter
+                        self._seq_counter += 1
+                        self._broadcast(packet)
                     elif packet.packet_type in [
                         PeerCodePacket.TYPE_INSERT_TEXT,
                         PeerCodePacket.TYPE_DELETE_TEXT,
+                        PeerCodePacket.TYPE_OT_OPERATION,
                         PeerCodePacket.TYPE_STREAM_FRAME,
                         PeerCodePacket.TYPE_AUDIO_CHUNK,
                         PeerCodePacket.TYPE_AUDIO_PRESENCE,
